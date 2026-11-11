@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="id"><head><meta name="site-mode" content="saml-guide"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Langkah 4: menguji login lokal dan login Entra ID via SAML, membaca AuthnRequest dan Assertion, troubleshooting, hardening, dan cleanup."><title>Langkah 4 · Uji &amp; troubleshooting — SAML lab</title><link rel="stylesheet" href="styles.css"><script type="module" src="shell.js"></script></head>
+<body><div id="shell"></div><div class="layout"><main id="main" class="page">
+<header class="hero"><div class="eyebrow">Langkah 4 dari 4 / Uji end-to-end</div><h1>Dua jalur login.<br>Satu bukti di setiap hop.</h1><p class="lead">Uji user lokal Keycloak sebagai pembanding, lalu login melalui Entra ID dengan SAML. Setelah itu baca pesan SAML yang sebenarnya, kenali error umum, dan kuatkan konfigurasi sebelum dibawa ke produksi.</p></header>
+
+<section class="panel" id="local"><div class="section-head"><h2>Jalur A · User lokal Keycloak</h2><span class="badge good">TANPA ENTRA</span></div>
+<ol class="step-list">
+<li><h3>Buka claims-app</h3><p><code>http://localhost:3180</code> → <em>Masuk dengan akun lokal Keycloak</em>.</p></li>
+<li><h3>Login sebagai <code>lab-local</code></h3><p>Salin password: <code>Get-Content labs\saml-entra-keycloak\.local\secrets\local_user_password -Raw | Set-Clipboard</code>.</p></li>
+</ol>
+<div class="grid two">
+<figure class="shot"><a href="img/saml-lab/02-keycloak-login-page.png"><img src="img/saml-lab/02-keycloak-login-page.png" width="1440" height="900" loading="lazy" alt="Halaman login Keycloak realm CMP SAML Lab dengan form username dan tombol Sign in with Microsoft Entra ID"></a><figcaption><strong>Gambar 2 · Login Keycloak.</strong><ol><li>Form user lokal (<code>lab-local</code>).</li><li>Tombol broker <em>Sign in with Microsoft Entra ID</em>; jalur B melewati halaman ini lewat <code>kc_idp_hint</code>.</li></ol></figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/03-claims-local-user.png"><img src="img/saml-lab/03-claims-local-user.png" width="1440" height="900" loading="lazy" alt="claims-app setelah login lokal: identity_provider local, roles cmp-viewer, entra_oid kosong"></a><figcaption><strong>Gambar 3 · Hasil user lokal.</strong><ol><li><code>identity_provider</code> tidak ada → ditampilkan <em>local (Keycloak)</em>.</li><li><code>roles</code> berisi <code>cmp-viewer</code> (diberikan langsung oleh script). <code>entra_oid</code> kosong.</li></ol></figcaption></figure>
+</div></section>
+
+<section class="panel" id="entra"><div class="section-head"><h2>Jalur B · Microsoft Entra ID via SAML</h2><span class="badge warn">JALUR UTAMA</span></div>
+<ol class="step-list">
+<li><h3>Logout, lalu pilih Entra</h3><p>Klik <em>Logout (Keycloak end_session)</em>, kemudian <em>Masuk dengan Microsoft Entra ID (SAML)</em>. Gunakan jendela InPrivate jika ingin memaksa pemilihan akun.</p></li>
+<li><h3>Sign-in Entra</h3><p>Pilih akun yang di-assign ke aplikasi dan selesaikan MFA sesuai Conditional Access tenant.</p></li>
+<li><h3>First broker login (sekali)</h3><p>Lengkapi <em>Last name</em> bila diminta, lalu <em>Submit</em>.</p></li>
+</ol>
+<figure class="shot"><a href="img/saml-lab/04-entra-signin.png"><img src="img/saml-lab/04-entra-signin.png" width="1440" height="900" loading="lazy" alt="Halaman Microsoft Pick an account setelah redirect SAML dari Keycloak"></a><figcaption><strong>Gambar 4 · Entra menerima AuthnRequest.</strong><ol><li>Pilih akun tenant. Browser tiba di sini melalui <code>SAMLRequest</code> (HTTP-Redirect) dari Keycloak.</li></ol></figcaption></figure>
+<div class="grid two">
+<figure class="shot"><a href="img/saml-lab/05-keycloak-first-broker-login.png"><img src="img/saml-lab/05-keycloak-first-broker-login.png" width="1440" height="900" loading="lazy" alt="Form Keycloak Update Account Information dengan field Last name kosong"></a><figcaption><strong>Gambar 5 · First broker login.</strong><ol><li><em>Last name</em> kosong karena Entra tidak mengirim klaim <code>surname</code>.</li><li><em>Submit</em> membuat user JIT dan link ke <code>entra-saml</code>.</li></ol></figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/06-claims-entra-user.png"><img src="img/saml-lab/06-claims-entra-user.png" width="1440" height="900" loading="lazy" alt="claims-app setelah login Entra: identity_provider entra-saml, roles cmp-viewer, entra_oid terisi"></a><figcaption><strong>Gambar 6 · Hasil user Entra.</strong><ol><li><code>identity_provider = entra-saml</code>.</li><li><code>roles</code> berisi <code>cmp-viewer</code> dari <code>CMP.Reader</code>.</li><li><code>entra_oid</code> = object ID Entra (disamarkan).</li></ol></figcaption></figure>
+</div></section>
+
+<section class="panel" id="evidence"><h2>Checklist bukti (hasil uji 11 Nov 2026)</h2>
+<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Bukti</th><th>Di mana</th><th>Status</th></tr></thead><tbody>
+<tr><td>Entra (IdP)</td><td>Sign-in interaktif ke aplikasi lab berstatus Success</td><td><a href="saml-lab-entra.html#portal">Gambar 17</a></td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Entra (IdP)</td><td>Assertion ditandatangani, berisi <code>role = CMP.Reader</code></td><td>Capture SAML (tabel di bawah)</td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Keycloak (SP)</td><td>Tanda tangan diterima, user JIT dibuat, link <code>entra-saml</code></td><td><a href="saml-lab-keycloak.html#users">Gambar 11–13</a></td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Keycloak (SP)</td><td>Realm role <code>cmp-viewer</code> dari mapper</td><td><a href="saml-lab-keycloak.html#users">Gambar 14</a></td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Aplikasi</td><td>ID token terverifikasi; <code>identity_provider</code>, <code>roles</code>, <code>entra_oid</code> benar</td><td>Gambar 6</td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Pembanding</td><td>User lokal tanpa <code>identity_provider</code> tetapi tetap <code>cmp-viewer</code></td><td>Gambar 3</td><td><span class="badge good">LULUS</span></td></tr>
+<tr><td>Logout</td><td>Single logout ke Entra</td><td>—</td><td><span class="badge">TIDAK DIUJI</span></td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="anatomy"><div class="section-head"><h2>Anatomi pesan SAML (capture live, disamarkan)</h2><span class="badge">L400</span></div>
+<h3>AuthnRequest (Keycloak → Entra)</h3>
+<pre data-label="XML"><code>&lt;samlp:AuthnRequest ID="…" Version="2.0" IssueInstant="…" ForceAuthn="false"
+    Destination="https://login.microsoftonline.com/&lt;tenant&gt;/saml2"
+    AssertionConsumerServiceURL="http://localhost:8180/realms/saml-lab/broker/entra-saml/endpoint"
+    ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"&gt;
+  &lt;saml:Issuer&gt;http://localhost:8180/realms/saml-lab&lt;/saml:Issuer&gt;
+  &lt;samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/&gt;
+&lt;/samlp:AuthnRequest&gt;</code></pre>
+<div class="table-wrap"><table><thead><tr><th>Elemen</th><th>Dicocokkan Entra dengan</th><th>Error jika salah</th></tr></thead><tbody>
+<tr><td><code>Issuer</code></td><td>Identifier (Entity ID)</td><td><code>AADSTS700016</code></td></tr>
+<tr><td><code>AssertionConsumerServiceURL</code></td><td>Reply URL</td><td><code>AADSTS50011</code></td></tr>
+<tr><td><code>ProtocolBinding</code></td><td>Respons dikirim via HTTP-POST</td><td>—</td></tr>
+<tr><td>Tanda tangan</td><td>Tidak ada (lab). Wajib bila verifikasi request diaktifkan di Entra</td><td>—</td></tr>
+</tbody></table></div>
+<h3>Response dan Assertion (Entra → Keycloak)</h3>
+<div class="table-wrap"><table><thead><tr><th>Elemen</th><th>Nilai di capture</th><th>Dicek Keycloak</th></tr></thead><tbody>
+<tr><td>Signature</td><td>Response: <strong>tidak</strong>; Assertion: <strong>ya</strong> — RSA-SHA256, digest SHA-256, exclusive C14N</td><td>Want Assertions signed + Validate signatures</td></tr>
+<tr><td><code>Status</code></td><td><code>urn:oasis:names:tc:SAML:2.0:status:Success</code></td><td>Harus Success</td></tr>
+<tr><td><code>Issuer</code></td><td><code>https://sts.windows.net/&lt;tenant&gt;/</code></td><td>= Identity provider entity ID</td></tr>
+<tr><td><code>Destination</code>, <code>Recipient</code></td><td>Endpoint broker <code>…/broker/entra-saml/endpoint</code></td><td>= endpoint yang menerima</td></tr>
+<tr><td><code>InResponseTo</code></td><td>ID AuthnRequest</td><td>Mencegah replay/unsolicited response</td></tr>
+<tr><td><code>Audience</code></td><td><code>http://localhost:8180/realms/saml-lab</code></td><td>= SP entity ID</td></tr>
+<tr><td><code>NameID</code></td><td>Format emailAddress, nilai UPN</td><td>Tidak dipakai sebagai principal (principal = <code>objectidentifier</code>)</td></tr>
+<tr><td><code>Conditions</code></td><td>NotBefore = IssueInstant − 5 menit; NotOnOrAfter = IssueInstant + 60 menit</td><td>± <code>allowedClockSkew</code> 30 detik</td></tr>
+<tr><td><code>AuthnContextClassRef</code></td><td><code>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</code></td><td>Tidak dipakai</td></tr>
+<tr><td><code>authnmethodsreferences</code></td><td><code>…/authenticationmethod/password</code>, <code>…/authenticationmethod/x509</code>, <code>http://schemas.microsoft.com/claims/multipleauthn</code></td><td>Tidak dipetakan; petakan jika aplikasi butuh bukti MFA</td></tr>
+<tr><td>Attributes</td><td><code>tenantid</code>, <code>objectidentifier</code>, <code>name</code>, <code>givenname</code>, <code>displayname</code>, <code>identityprovider</code>, <code>authnmethodsreferences</code>, <code>role</code></td><td>Lihat <a href="saml-lab-keycloak.html#mappers">mapper</a></td></tr>
+</tbody></table></div>
+<div class="callout info"><strong>Membaca <code>AuthnContextClassRef</code> dengan benar.</strong> Nilainya tetap <em>Password</em> meskipun user menyelesaikan MFA. Bukti MFA ada di klaim <code>authnmethodsreferences</code> (<code>multipleauthn</code>). Kebijakan “wajib MFA” sebaiknya ditegakkan oleh Conditional Access di Entra, bukan diperiksa ulang lewat AuthnContext.</div></section>
+
+<section class="panel" id="capture"><h2>Cara meng-capture dan decode SAML sendiri</h2><ol class="step-list">
+<li><h3>Browser DevTools</h3><p>F12 → <em>Network</em> → centang <em>Preserve log</em>. Login lewat jalur B. Cari request ke <code>login.microsoftonline.com/…/saml2</code> (query <code>SAMLRequest</code>) dan POST ke <code>/broker/entra-saml/endpoint</code> (form field <code>SAMLResponse</code>) di tab <em>Payload</em>.</p></li>
+<li><h3>Atau ekstensi SAML-tracer</h3><p>Ekstensi Firefox/Chrome yang otomatis men-decode pesan SAML di setiap request.</p></li>
+<li><h3>Decode lokal dengan PowerShell</h3><pre data-label="PowerShell"><code># SAMLResponse (HTTP-POST): base64 saja
+$b64 = (Get-Clipboard -Raw).Trim()
+[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | Set-Content saml-response.xml
+
+# SAMLRequest (HTTP-Redirect): URL-decode, base64, lalu raw DEFLATE
+$raw = [Uri]::UnescapeDataString((Get-Clipboard -Raw).Trim())
+$ms  = [IO.MemoryStream]::new([Convert]::FromBase64String($raw))
+$z   = [IO.Compression.DeflateStream]::new($ms, [IO.Compression.CompressionMode]::Decompress)
+[IO.StreamReader]::new($z).ReadToEnd() | Set-Content saml-request.xml</code></pre></li>
+</ol>
+<div class="callout danger"><strong>Assertion berisi data pribadi</strong> (UPN, object ID, tenant ID) dan, selama masa berlakunya, dapat dipakai ulang terhadap SP yang lemah. Simpan hanya di laptop, jangan tempel ke decoder online, jangan commit, dan hapus setelah selesai.</div></section>
+
+<section class="panel" id="troubleshoot"><h2>Troubleshooting</h2>
+<div class="table-wrap"><table><thead><tr><th>Gejala</th><th>Penyebab paling mungkin</th><th>Perbaikan</th></tr></thead><tbody>
+<tr><td><code>AADSTS50011</code> reply URL mismatch</td><td>Reply URL Entra ≠ Redirect URI Keycloak (port, alias, atau trailing slash)</td><td>Samakan dengan Gambar 7 penanda 1, atau jalankan ulang <code>configure</code>.</td></tr>
+<tr><td><code>AADSTS700016</code> application not found</td><td>Identifier Entra ≠ SP entity ID Keycloak</td><td>Samakan dengan Gambar 8 penanda 1.</td></tr>
+<tr><td><code>AADSTS50105</code> user not assigned</td><td>Assignment wajib dan user belum di-assign</td><td><code>New-EntraSamlApp.ps1 -AssignUserPrincipalName &lt;upn&gt;</code> atau <em>Users and groups</em>.</td></tr>
+<tr><td>Keycloak: <em>Unexpected error when handling authentication request to identity provider</em></td><td>Pesan generik; penyebab ada di log</td><td><code>./Invoke-SamlLab.ps1 -Action logs -Service keycloak</code>, cari <code>IdentityBrokerException</code> / <code>SAML</code>.</td></tr>
+<tr><td>Keycloak: <em>Invalid signature</em> (di log)</td><td>Sertifikat Entra berubah, sedangkan Keycloak memakai sertifikat statis</td><td>Jalankan ulang <code>configure</code> (impor metadata baru).</td></tr>
+<tr><td>Keycloak: assertion <em>expired</em> / not yet valid</td><td>Jam host atau WSL bergeser</td><td>Sinkronkan jam Windows; <code>wsl --shutdown</code> untuk me-reset jam WSL.</td></tr>
+<tr><td>Import metadata: <code>Network is unreachable</code></td><td>Container tanpa egress (mis. Global Secure Access)</td><td>Gunakan mode default script (upload file), bukan <code>-UseMetadataUrl</code>.</td></tr>
+<tr><td>Form <em>Update account information</em> selalu muncul</td><td>Atribut wajib kosong di Entra (surname/mail)</td><td>Isi atribut di Entra, atau sesuaikan first broker login flow.</td></tr>
+<tr><td>Role <code>cmp-viewer</code> tidak ada</td><td>User di-assign ke role lain / tanpa role, atau nama nilai role salah ketik</td><td>Cek Gambar 16 dan nilai <code>attribute.value</code> mapper.</td></tr>
+<tr><td>claims-app: <em>State mismatch</em> / <em>Login transaction expired</em></td><td>Login dimulai di tab lain atau cookie transaksi kedaluwarsa</td><td>Mulai ulang dari <code>http://localhost:3180</code> di satu tab.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="hardening"><div class="section-head"><h2>Dari lab ke produksi</h2><span class="badge warn">HARDENING</span></div>
+<div class="table-wrap"><table><thead><tr><th>Area</th><th>Lab</th><th>Produksi</th></tr></thead><tbody>
+<tr><td>Transport</td><td>HTTP localhost</td><td>HTTPS dengan domain sendiri; <code>KC_HOSTNAME</code>, Identifier, dan Reply URL ikut berubah.</td></tr>
+<tr><td>AuthnRequest</td><td>Tidak ditandatangani</td><td>Aktifkan <em>Want AuthnRequests signed</em> di Keycloak dan verifikasi request di Entra.</td></tr>
+<tr><td>Sertifikat Entra</td><td>Statis, rotasi manual</td><td>Metadata URL dengan egress terkontrol, atau runbook rotasi dengan dua sertifikat paralel dan alert kedaluwarsa.</td></tr>
+<tr><td>Enkripsi assertion</td><td>Off</td><td>Pertimbangkan jika assertion melewati perantara yang tidak dipercaya.</td></tr>
+<tr><td>Scope token aplikasi</td><td>Full scope (semua realm role)</td><td>Matikan <em>Full scope allowed</em> pada client; beri role scope mapping hanya <code>cmp-viewer</code>/<code>cmp-admin</code>.</td></tr>
+<tr><td>Admin Keycloak</td><td>Admin bootstrap sementara <code>lab-admin</code></td><td>Buat admin permanen (sebaiknya juga lewat Entra), hapus admin sementara.</td></tr>
+<tr><td>Akses Entra</td><td>Assignment per user</td><td>Assignment per grup, Conditional Access untuk aplikasi, access review berkala.</td></tr>
+<tr><td>Logout</td><td>Hanya sesi Keycloak/aplikasi</td><td>Uji single logout dan konfigurasikan Logout URL di Entra sesuai kebutuhan.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="cleanup"><h2>Cleanup</h2>
+<pre data-label="PowerShell"><code>cd labs\saml-entra-keycloak\scripts
+./Invoke-SamlLab.ps1 -Action down      # stop container, data tetap
+./Invoke-SamlLab.ps1 -Action reset     # stop dan hapus volume database
+./Remove-EntraSamlApp.ps1 -Purge       # hapus app registration + enterprise app, kosongkan recycle bin, hapus .local\entra.json</code></pre>
+<p class="muted">Hapus juga sesi browser (InPrivate) dan file capture SAML yang Anda buat.</p></section>
+</main></div></body></html>

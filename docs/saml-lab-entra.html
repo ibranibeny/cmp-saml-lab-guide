@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="id"><head><meta name="site-mode" content="saml-guide"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Langkah 2: membuat Enterprise App SAML non-gallery di Microsoft Entra ID dengan Microsoft Graph, app role CMP.Reader, sertifikat signing, dan assignment."><title>Langkah 2 · Entra ID sebagai IdP — SAML lab</title><link rel="stylesheet" href="styles.css"><script type="module" src="shell.js"></script></head>
+<body><div id="shell"></div><div class="layout"><main id="main" class="page">
+<header class="hero"><div class="eyebrow">Langkah 2 dari 4 / Microsoft Entra ID = SAML IdP</div><h1>Satu Enterprise App.<br>Enam panggilan Graph.</h1><p class="lead"><code>New-EntraSamlApp.ps1</code> mengotomatiskan apa yang di video dilakukan lewat portal: aplikasi non-gallery, mode SAML, Identifier dan Reply URL dari Keycloak, app role, sertifikat signing, dan assignment user. Hasilnya diverifikasi di portal Entra.</p></header>
+
+<div class="callout info"><strong>Hak akses yang dibutuhkan:</strong> akun Azure CLI dengan peran <em>Cloud Application Administrator</em> (atau <em>Application Administrator</em>). Script memakai token Graph dari <code>az account get-access-token --resource-type ms-graph</code>; token tidak pernah ditulis ke disk.</div>
+
+<section class="panel" id="values"><div class="section-head"><h2>Nilai yang harus cocok dengan Keycloak</h2><span class="badge warn">HARUS IDENTIK</span></div>
+<div class="table-wrap"><table><thead><tr><th>Field di Entra</th><th>Nilai lab</th><th>Sumber di Keycloak</th></tr></thead><tbody>
+<tr><td><strong>Identifier (Entity ID)</strong></td><td><code>http://localhost:8180/realms/saml-lab</code></td><td><em>Service provider entity ID</em> pada IdP <code>entra-saml</code> (<a href="saml-lab-keycloak.html#endpoints">Gambar 8, penanda 1</a>)</td></tr>
+<tr><td><strong>Reply URL (ACS)</strong></td><td><code>http://localhost:8180/realms/saml-lab/broker/entra-saml/endpoint</code></td><td><em>Redirect URI</em> pada IdP <code>entra-saml</code> (<a href="saml-lab-keycloak.html#general">Gambar 7, penanda 1</a>)</td></tr>
+<tr><td>Sign on URL</td><td>kosong</td><td>Login dimulai dari SP (SP-initiated), jadi tidak diperlukan.</td></tr>
+<tr><td>App Federation Metadata URL</td><td><code>https://login.microsoftonline.com/&lt;tenant&gt;/federationmetadata/2007-06/federationmetadata.xml?appid=&lt;appId&gt;</code></td><td>Diimpor ke Keycloak sebagai file (langkah 3).</td></tr>
+</tbody></table></div>
+<p class="muted">Entra menerima <code>http://localhost</code> sebagai Reply URL dan Identifier untuk lab ini. Untuk produksi gunakan HTTPS dan domain milik organisasi.</p></section>
+
+<section class="panel" id="graph"><h2>Alur Microsoft Graph (idempotent)</h2><ol class="step-list">
+<li><h3>Instansiasi aplikasi non-gallery</h3><p>Template <code>8adf8e6e-67b2-4cf2-a259-e3dc5476c621</code> adalah “Create your own application” di portal. Jika aplikasi dengan nama yang sama sudah ada, script memakainya kembali.</p><pre data-label="HTTP"><code>POST /v1.0/applicationTemplates/8adf8e6e-67b2-4cf2-a259-e3dc5476c621/instantiate
+{ "displayName": "CMP SAML Lab - Keycloak localhost" }</code></pre></li>
+<li><h3>Mode SAML dan wajib assignment</h3><pre data-label="HTTP"><code>PATCH /v1.0/servicePrincipals/{sp-id}
+{ "preferredSingleSignOnMode": "saml", "appRoleAssignmentRequired": true }</code></pre><p class="muted"><code>appRoleAssignmentRequired=true</code> membuat user yang tidak di-assign ditolak oleh Entra (<code>AADSTS50105</code>) sebelum assertion dibuat.</p></li>
+<li><h3>Basic SAML Configuration</h3><pre data-label="HTTP"><code>PATCH /v1.0/applications/{app-object-id}
+{ "identifierUris": ["http://localhost:8180/realms/saml-lab"],
+  "web": { "redirectUris": ["http://localhost:8180/realms/saml-lab/broker/entra-saml/endpoint"] } }</code></pre><p class="muted">Jika kebijakan tenant menolak identifier tersebut, script beralih ke <code>api://{appId}</code> dan Anda harus menyamakan SP entity ID di Keycloak. Di tenant lab ini fallback tidak diperlukan.</p></li>
+<li><h3>App role pada service principal</h3><pre data-label="HTTP"><code>PATCH /v1.0/servicePrincipals/{sp-id}
+{ "appRoles": [ ...role bawaan template...,
+  { "value": "CMP.Reader", "displayName": "CMP Reader (read-only)", "allowedMemberTypes": ["User"], "isEnabled": true, "id": "&lt;guid&gt;" },
+  { "value": "CMP.Admin",  "displayName": "CMP Admin",              "allowedMemberTypes": ["User"], "isEnabled": true, "id": "&lt;guid&gt;" } ] }</code></pre><p class="muted">PATCH <code>appRoles</code> menimpa seluruh koleksi, jadi role bawaan template ikut dikirim ulang. Role ini disimpan di <strong>service principal</strong> (sesuai panduan Graph untuk SAML), bukan di objek application; karena itu di lab ini role tidak tampil di <em>App registrations → App roles</em>, tetapi tampil saat assignment (Gambar 16).</p></li>
+<li><h3>Sertifikat token-signing SAML</h3><pre data-label="HTTP"><code>POST /v1.0/servicePrincipals/{sp-id}/addTokenSigningCertificate
+{ "displayName": "CN=CMP SAML Lab Keycloak", "endDateTime": "&lt;sekarang + 1 tahun&gt;" }
+
+PATCH /v1.0/servicePrincipals/{sp-id}
+{ "preferredTokenSigningKeyThumbprint": "&lt;thumbprint&gt;" }</code></pre><p class="muted">Tanpa PATCH kedua, sertifikat sudah dibuat tetapi belum menjadi sertifikat signing aktif.</p></li>
+<li><h3>Assign user ke CMP.Reader</h3><pre data-label="HTTP"><code>POST /v1.0/servicePrincipals/{sp-id}/appRoleAssignedTo
+{ "principalId": "&lt;user-object-id&gt;", "resourceId": "{sp-id}", "appRoleId": "&lt;CMP.Reader id&gt;" }</code></pre><p class="muted">Default: user yang sedang login di Azure CLI. Pakai <code>-AssignUserPrincipalName</code> dan <code>-AssignRole CMP.Admin</code> untuk user/role lain.</p></li>
+</ol>
+<p>Setelah selesai, ID non-rahasia (tenant, appId, object ID, entity ID, metadata URL, thumbprint) ditulis ke <code>.local/entra.json</code> untuk dipakai langkah 3. Script juga menunggu sampai metadata federasi dapat diunduh.</p></section>
+
+<section class="panel" id="portal"><h2>Verifikasi di portal Entra</h2>
+<figure class="shot"><a href="img/saml-lab/15-entra-saml-sso.png"><img src="img/saml-lab/15-entra-saml-sso.png" width="1440" height="1000" loading="lazy" alt="Blade Single sign-on aplikasi CMP SAML Lab dengan Basic SAML Configuration, Attributes and Claims, dan SAML Certificates"></a><figcaption><strong>Gambar 15 · Enterprise applications → CMP SAML Lab - Keycloak localhost → Single sign-on.</strong><ol><li><strong>Basic SAML Configuration</strong>: Identifier dan Reply URL sama dengan nilai Keycloak.</li><li><strong>Attributes &amp; Claims</strong>: klaim default Entra; tidak ada claims-mapping policy tambahan.</li><li><strong>SAML Certificates</strong>: sertifikat aktif dan <em>App Federation Metadata Url</em> yang diimpor ke Keycloak.</li></ol></figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/16-entra-users-groups.png"><img src="img/saml-lab/16-entra-users-groups.png" width="1900" height="560" loading="lazy" alt="Blade Users and groups dengan satu user yang di-assign ke role CMP Reader (read-only)"></a><figcaption><strong>Gambar 16 · Users and groups.</strong> User uji di-assign ke app role <em>CMP Reader (read-only)</em>. Inilah yang membuat Entra mengirim klaim <code>role = CMP.Reader</code>.</figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/17-entra-signin-logs.png"><img src="img/saml-lab/17-entra-signin-logs.png" width="1900" height="560" loading="lazy" alt="Sign-in logs aplikasi dengan satu sign-in interaktif berstatus Success"></a><figcaption><strong>Gambar 17 · Sign-in logs (bukti dari sisi IdP).</strong><ol><li>Sign-in interaktif ke aplikasi lab berstatus <strong>Success</strong> pada 11 Nov 2026. IP, UPN dan request ID disamarkan.</li></ol></figcaption></figure></section>
+
+<section class="panel" id="claims"><div class="section-head"><h2>Klaim yang benar-benar dikirim</h2><span class="badge">DARI CAPTURE LIVE</span></div>
+<div class="table-wrap"><table><thead><tr><th>Klaim SAML (Attribute Name)</th><th>Sumber Entra</th><th>Mapper Keycloak</th><th>Hasil di lab</th></tr></thead><tbody>
+<tr><td><code>http://schemas.microsoft.com/identity/claims/objectidentifier</code></td><td>bawaan (selalu)</td><td>Principal broker + <code>entra_oid</code></td><td>Terkirim. Kunci identitas (immutable).</td></tr>
+<tr><td><code>http://schemas.microsoft.com/identity/claims/tenantid</code></td><td>bawaan (selalu)</td><td><code>entra_tenant_id</code></td><td>Terkirim.</td></tr>
+<tr><td><code>http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name</code></td><td><code>user.userprincipalname</code></td><td><code>email</code></td><td>Terkirim (UPN).</td></tr>
+<tr><td><code>http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname</code></td><td><code>user.givenname</code></td><td><code>firstName</code></td><td>Terkirim.</td></tr>
+<tr><td><code>http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname</code></td><td><code>user.surname</code></td><td><code>lastName</code></td><td><mark class="key">Tidak terkirim</mark>: surname user kosong.</td></tr>
+<tr><td><code>http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress</code></td><td><code>user.mail</code></td><td>tidak dipetakan</td><td><mark class="key">Tidak terkirim</mark>: atribut <code>mail</code> kosong.</td></tr>
+<tr><td><code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role</code></td><td>app role assignment</td><td><code>CMP.Reader → cmp-viewer</code>, <code>CMP.Admin → cmp-admin</code></td><td>Terkirim: <code>CMP.Reader</code>.</td></tr>
+<tr><td><code>http://schemas.microsoft.com/identity/claims/displayname</code>, <code>…/identityprovider</code>, <code>http://schemas.microsoft.com/claims/authnmethodsreferences</code></td><td>bawaan</td><td>tidak dipetakan</td><td>Terkirim; berguna untuk audit (mis. bukti MFA).</td></tr>
+</tbody></table></div>
+<div class="callout danger"><strong>Atribut kosong tidak menghasilkan klaim kosong; klaimnya hilang.</strong> Karena itu mapper <code>lastName</code> tidak terisi dan Keycloak menampilkan form <em>Update account information</em> pada login pertama (<a href="saml-lab-test.html#entra">Gambar 5</a>). Isi surname/mail di Entra, atau ubah first broker login flow, jika ingin login pertama tanpa interaksi.</div>
+<p class="muted">Role claim dikirim otomatis untuk app role assignment; tidak perlu menambah klaim grup. Jika memakai grup, perhatikan batas jumlah grup dalam token dan pertimbangkan app role sebagai gantinya.</p></section>
+
+<section class="panel" id="cert"><h2>Sertifikat, metadata, dan rotasi</h2><div class="grid two">
+<div><h3>Siklus hidup</h3><ul><li>Masa berlaku lab: 1 tahun (parameter <code>endDateTime</code>).</li><li>Entra mengirim notifikasi kedaluwarsa ke alamat di <em>Notification Email</em> blade SAML.</li><li>Assertion ditandatangani RSA-SHA256.</li></ul></div>
+<div><h3>Rotasi tanpa downtime</h3><ol><li>Tambahkan sertifikat baru (belum aktif).</li><li>Tambahkan sertifikat baru ke Keycloak, atau impor ulang metadata.</li><li>Aktifkan sertifikat baru di Entra.</li><li>Hapus sertifikat lama dari keduanya.</li></ol><p class="muted">Di lab ini cukup jalankan ulang <code>configure</code> setelah sertifikat berubah, karena Keycloak memakai sertifikat statis.</p></div>
+</div></section>
+
+<section class="panel" id="manual"><h2>Padanan manual di portal (seperti video)</h2><ol class="step-list">
+<li><h3>Buat aplikasi</h3><p>Entra admin center → <em>Enterprise applications</em> → <em>New application</em> → <em>Create your own application</em> → “Integrate any other application you don't find in the gallery (Non-gallery)”.</p></li>
+<li><h3>Pilih SAML</h3><p><em>Single sign-on</em> → <em>SAML</em> → edit <em>Basic SAML Configuration</em>: isi Identifier dan Reply URL dari tabel di atas, simpan.</p></li>
+<li><h3>App role</h3><p><em>App registrations</em> → aplikasi yang sama → <em>App roles</em> → buat <code>CMP.Reader</code> dan <code>CMP.Admin</code> (allowed member types: Users/Groups).</p></li>
+<li><h3>Assignment</h3><p><em>Enterprise applications</em> → <em>Properties</em> → <em>Assignment required?</em> = Yes. <em>Users and groups</em> → <em>Add user/group</em> → pilih role.</p></li>
+<li><h3>Salin metadata</h3><p>Di kartu <em>SAML Certificates</em>, salin <em>App Federation Metadata Url</em> atau unduh <em>Federation Metadata XML</em> untuk langkah 3.</p></li>
+</ol></section>
+
+<section class="panel sources"><h3>Sumber</h3><ul>
+<li><a href="https://learn.microsoft.com/en-us/graph/application-saml-sso-configure-api">Configure SAML-based single sign-on for your application using the Microsoft Graph API</a></li>
+<li><a href="https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/add-application-portal-setup-sso">Enable SAML single sign-on for an enterprise application</a></li>
+<li><a href="https://learn.microsoft.com/en-us/entra/identity-platform/reference-saml-tokens">SAML token claims reference</a></li>
+<li><a href="https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/tutorial-manage-certificates-for-federated-single-sign-on">Manage certificates for federated single sign-on</a></li>
+</ul></section>
+</main></div></body></html>

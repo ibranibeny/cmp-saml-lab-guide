@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="id"><head><meta name="site-mode" content="saml-guide"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Langkah 3: Keycloak 26 sebagai SAML Service Provider/broker untuk Microsoft Entra ID: IdP entra-saml, signature, mapper, user JIT, dan user lokal."><title>Langkah 3 · Keycloak sebagai SP — SAML lab</title><link rel="stylesheet" href="styles.css"><script type="module" src="shell.js"></script></head>
+<body><div id="shell"></div><div class="layout"><main id="main" class="page">
+<header class="hero"><div class="eyebrow">Langkah 3 dari 4 / Keycloak 26.8.2 = SAML SP / broker</div><h1>Percayai tanda tangan Entra.<br>Petakan identitas ke role.</h1><p class="lead"><code>Set-KeycloakEntraBroker.ps1</code> memakai Keycloak Admin REST API untuk membuat identity provider SAML <code>entra-saml</code>, tujuh mapper, atribut profil Entra, dan user lokal pembanding. Screenshot di bawah adalah hasilnya di admin console.</p></header>
+
+<section class="panel" id="realm"><h2>Fondasi dari realm import</h2>
+<p>File <code>keycloak/realm-saml-lab.json</code> diimpor saat container pertama kali start (<code>--import-realm</code>). Client secret ditulis sebagai <code>${CLAIMS_APP_CLIENT_SECRET}</code> dan diisi Keycloak dari environment yang dibaca dari Docker secret, sehingga tidak ada secret di file realm.</p>
+<div class="grid two">
+<div class="table-wrap"><table><thead><tr><th>Realm <code>saml-lab</code></th><th>Nilai</th></tr></thead><tbody>
+<tr><td>SSL required</td><td><code>external</code> (localhost boleh HTTP)</td></tr>
+<tr><td>Brute force protection</td><td>On</td></tr>
+<tr><td>Self-registration / reset password</td><td>Off / Off</td></tr>
+<tr><td>Access token lifespan</td><td>300 detik</td></tr>
+<tr><td>SSO session idle / max</td><td>30 menit / 10 jam</td></tr>
+<tr><td>Realm roles</td><td><code>cmp-viewer</code>, <code>cmp-admin</code></td></tr>
+</tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>Client <code>claims-app</code></th><th>Nilai</th></tr></thead><tbody>
+<tr><td>Tipe</td><td>Confidential OIDC, Standard flow saja</td></tr>
+<tr><td>Direct access grants / implicit</td><td>Off / Off</td></tr>
+<tr><td>PKCE</td><td><code>S256</code> wajib</td></tr>
+<tr><td>Redirect URI</td><td><code>http://localhost:3180/callback</code> (exact)</td></tr>
+<tr><td>Klaim tambahan</td><td><code>roles</code>, <code>identity_provider</code>, <code>entra_oid</code>, <code>entra_tenant_id</code></td></tr>
+</tbody></table></div>
+</div></section>
+
+<section class="panel" id="metadata"><div class="section-head"><h2>Impor metadata Entra tanpa egress container</h2><span class="badge warn">TEMUAN LAPANGAN</span></div>
+<p>Video mengimpor <em>App Federation Metadata URL</em> langsung di Keycloak. Di laptop uji, Keycloak gagal dengan <code>Network is unreachable</code>: klien Global Secure Access membuat DNS di dalam container mengembalikan alamat sintetis <code>6.6.x.x</code> yang tidak bisa dirutekan dari jaringan Docker.</p>
+<ol class="step-list">
+<li><h3>Unduh metadata di host</h3><p>Host Windows bisa menjangkau Entra; script menyimpan XML ke <code>.local/entra-federation-metadata.xml</code>.</p></li>
+<li><h3>Upload sebagai file</h3><pre data-label="PowerShell"><code>Invoke-RestMethod -Method Post -Uri "$base/identity-provider/import-config" -Headers $headers -Form @{
+  providerId = 'saml'
+  file       = Get-Item .local\entra-federation-metadata.xml
+}</code></pre><p class="muted">Respons berisi SSO URL, entity ID IdP, dan sertifikat signing Entra. Script menimpa nilai lab di atasnya, lalu membuat/memperbarui IdP.</p></li>
+<li><h3>Pakai sertifikat statis</h3><p><code>useMetadataDescriptorUrl=false</code>. Login tetap berjalan karena binding SAML dibawa oleh browser; Keycloak tidak perlu menghubungi Entra.</p></li>
+</ol>
+<div class="callout danger"><strong>Konsekuensi:</strong> tidak ada rotasi kunci otomatis. Setelah sertifikat Entra diganti, jalankan ulang <code>configure</code>. Jika Keycloak punya egress ke <code>login.microsoftonline.com</code>, jalankan <code>Set-KeycloakEntraBroker.ps1 -UseMetadataUrl</code> agar Keycloak mengambil sertifikat baru sendiri.</div></section>
+
+<section class="panel" id="idp-config"><h2>Konfigurasi IdP <code>entra-saml</code></h2>
+<div class="table-wrap"><table><thead><tr><th>Setting</th><th>Nilai</th><th>Mengapa</th></tr></thead><tbody>
+<tr><td>Service provider entity ID</td><td><code>http://localhost:8180/realms/saml-lab</code></td><td>Harus sama dengan Identifier di Entra. Menjadi <code>Issuer</code> AuthnRequest dan <code>Audience</code> yang diharapkan.</td></tr>
+<tr><td>Principal type / attribute</td><td><code>ATTRIBUTE</code> / <code>…/claims/objectidentifier</code></td><td>Object ID immutable; NameID (UPN) bisa berubah ketika user di-rename.</td></tr>
+<tr><td>NameID policy format</td><td>Email (<code>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</code>)</td><td>Format yang diminta di AuthnRequest; Entra mengisinya dengan UPN.</td></tr>
+<tr><td>HTTP-POST binding response / AuthnRequest / logout</td><td>On / Off / Off</td><td>Respons via POST (assertion besar); AuthnRequest via Redirect, sesuai capture.</td></tr>
+<tr><td>Want AuthnRequests signed</td><td>Off</td><td>Lab: Entra tidak mewajibkannya. Produksi: aktifkan (lihat hardening).</td></tr>
+<tr><td>Want Assertions signed</td><td>On</td><td>Entra menandatangani <em>Assertion</em>, bukan Response.</td></tr>
+<tr><td>Want Assertions encrypted</td><td>Off</td><td>Butuh sertifikat enkripsi SP yang diunggah ke Entra; opsional untuk lab.</td></tr>
+<tr><td>Validate signatures</td><td>On + sertifikat Entra</td><td>Satu-satunya jangkar kepercayaan terhadap Entra.</td></tr>
+<tr><td>Allowed clock skew</td><td>30 detik</td><td>Toleransi jam host/WSL.</td></tr>
+<tr><td>Sync mode</td><td><code>FORCE</code></td><td>Atribut dan role dari Entra diperbarui pada setiap login, termasuk pencabutan role Keycloak bila role Entra berubah.</td></tr>
+<tr><td>Trust email</td><td>On</td><td>Email dari Entra dianggap terverifikasi; tidak ada email verifikasi ke user.</td></tr>
+<tr><td>First login flow</td><td><code>first broker login</code></td><td>Review profile → buat user / link akun yang sudah ada.</td></tr>
+</tbody></table></div>
+<figure class="shot" id="general"><a href="img/saml-lab/07-keycloak-idp-general.png"><img src="img/saml-lab/07-keycloak-idp-general.png" width="1440" height="1250" loading="lazy" alt="Keycloak Identity providers, entra-saml, tab Settings bagian General"></a><figcaption><strong>Gambar 7 · Identity providers → entra-saml → General.</strong><ol><li><strong>Redirect URI</strong>: salin ke <em>Reply URL</em> Entra.</li><li><strong>Alias</strong> <code>entra-saml</code>: bagian dari Redirect URI dan nilai <code>kc_idp_hint</code>. Mengganti alias berarti mengganti Reply URL.</li></ol></figcaption></figure>
+<figure class="shot" id="endpoints"><a href="img/saml-lab/08-keycloak-idp-endpoints.png"><img src="img/saml-lab/08-keycloak-idp-endpoints.png" width="1440" height="1250" loading="lazy" alt="Keycloak entra-saml SAML settings: entity ID, SSO URL, NameID format dan principal"></a><figcaption><strong>Gambar 8 · SAML settings.</strong><ol><li><strong>Service provider entity ID</strong>: salin ke <em>Identifier</em> Entra.</li><li><strong>Identity provider entity ID</strong>: <code>https://sts.windows.net/&lt;tenant&gt;/</code>, harus sama dengan <code>Issuer</code> assertion.</li><li><strong>Single Sign-On service URL</strong>: <code>https://login.microsoftonline.com/&lt;tenant&gt;/saml2</code>.</li><li><strong>NameID policy format</strong>: Email.</li><li><strong>Principal type</strong> Attribute [Name] = <code>objectidentifier</code>.</li></ol></figcaption></figure>
+<figure class="shot" id="signature"><a href="img/saml-lab/09-keycloak-idp-signature.png"><img src="img/saml-lab/09-keycloak-idp-signature.png" width="1440" height="1250" loading="lazy" alt="Keycloak entra-saml Signature and encryption settings"></a><figcaption><strong>Gambar 9 · Signature and encryption.</strong><ol><li><strong>Want Assertions signed</strong> = On.</li><li><strong>Validate signatures</strong> = On.</li><li><strong>Use metadata descriptor URL</strong> = Off (sertifikat statis, lihat di atas).</li><li><strong>Validating X509 certificates</strong>: sertifikat signing Entra dari metadata.</li></ol></figcaption></figure></section>
+
+<section class="panel" id="mappers"><h2>Tujuh mapper</h2>
+<div class="table-wrap"><table><thead><tr><th>Mapper</th><th>Tipe</th><th>Klaim SAML</th><th>Target Keycloak</th></tr></thead><tbody>
+<tr><td><code>email &lt;- UPN (name claim)</code></td><td>Attribute Importer</td><td><code>…/ws/2005/05/identity/claims/name</code></td><td><code>email</code></td></tr>
+<tr><td><code>firstName &lt;- givenname</code></td><td>Attribute Importer</td><td><code>…/claims/givenname</code></td><td><code>firstName</code></td></tr>
+<tr><td><code>lastName &lt;- surname</code></td><td>Attribute Importer</td><td><code>…/claims/surname</code></td><td><code>lastName</code></td></tr>
+<tr><td><code>entra_oid &lt;- objectidentifier</code></td><td>Attribute Importer</td><td><code>…/identity/claims/objectidentifier</code></td><td>atribut <code>entra_oid</code></td></tr>
+<tr><td><code>entra_tenant_id &lt;- tenantid</code></td><td>Attribute Importer</td><td><code>…/identity/claims/tenantid</code></td><td>atribut <code>entra_tenant_id</code></td></tr>
+<tr><td><code>CMP.Reader -&gt; cmp-viewer</code></td><td>SAML Attribute to Role</td><td><code>…/ws/2008/06/identity/claims/role</code> = <code>CMP.Reader</code></td><td>realm role <code>cmp-viewer</code></td></tr>
+<tr><td><code>CMP.Admin -&gt; cmp-admin</code></td><td>SAML Attribute to Role</td><td><code>…/claims/role</code> = <code>CMP.Admin</code></td><td>realm role <code>cmp-admin</code></td></tr>
+</tbody></table></div>
+<p class="muted"><code>entra_oid</code> dan <code>entra_tenant_id</code> dideklarasikan di <em>Realm settings → User profile</em> dengan izin view/edit hanya untuk admin. Keycloak 26 memakai user profile deklaratif dan, secara default, tidak menyimpan atribut yang tidak dideklarasikan, sehingga langkah ini wajib sebelum mapper bisa menulis nilainya.</p>
+<figure class="shot"><a href="img/saml-lab/10-keycloak-idp-mappers.png"><img src="img/saml-lab/10-keycloak-idp-mappers.png" width="1440" height="1000" loading="lazy" alt="Daftar tujuh mapper pada identity provider entra-saml"></a><figcaption><strong>Gambar 10 · entra-saml → Mappers.</strong><ol><li><code>CMP.Reader -&gt; cmp-viewer</code>: app role Entra menjadi realm role read-only.</li><li><code>entra_oid &lt;- objectidentifier</code>: menyimpan object ID Entra sebagai atribut user.</li></ol></figcaption></figure></section>
+
+<section class="panel" id="users"><h2>User hasil broker dan user lokal</h2>
+<figure class="shot"><a href="img/saml-lab/11-keycloak-users.png"><img src="img/saml-lab/11-keycloak-users.png" width="1440" height="1000" loading="lazy" alt="Daftar user realm saml-lab: lab-local dan user JIT dari Entra"></a><figcaption><strong>Gambar 11 · Users.</strong><ol><li><code>lab-local</code>: user lokal Keycloak (password di <code>.local/secrets/local_user_password</code>), tidak terhubung ke Entra.</li><li>User JIT dari Entra: username = object ID Entra (GUID, disamarkan).</li></ol></figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/12-keycloak-jit-user.png"><img src="img/saml-lab/12-keycloak-jit-user.png" width="1440" height="1250" loading="lazy" alt="Detail user JIT dengan atribut Entra object ID dan Entra tenant ID"></a><figcaption><strong>Gambar 12 · Detail user JIT.</strong><ol><li><strong>Username</strong>: object ID Entra, karena principal broker adalah <code>objectidentifier</code>.</li><li><strong>Last name</strong>: diisi user di form first broker login karena klaim <code>surname</code> tidak dikirim.</li><li><strong>Entra object ID / Entra tenant ID</strong>: ditulis oleh mapper atribut, hanya terlihat admin.</li></ol></figcaption></figure>
+<div class="grid two">
+<figure class="shot"><a href="img/saml-lab/13-keycloak-user-idp-link.png"><img src="img/saml-lab/13-keycloak-user-idp-link.png" width="1440" height="1250" loading="lazy" alt="Tab Identity provider links pada user JIT menunjukkan link ke Entra-saml"></a><figcaption><strong>Gambar 13 · Identity provider links.</strong><ol><li>Federated identity ke <code>entra-saml</code>. User ID link = principal (<code>objectidentifier</code>). <em>Unlink account</em> memutus hubungan tanpa menghapus user.</li></ol></figcaption></figure>
+<figure class="shot"><a href="img/saml-lab/14-keycloak-user-roles.png"><img src="img/saml-lab/14-keycloak-user-roles.png" width="1440" height="1250" loading="lazy" alt="Tab Role mapping pada user JIT menunjukkan role cmp-viewer"></a><figcaption><strong>Gambar 14 · Role mapping.</strong><ol><li><code>cmp-viewer</code> diberikan otomatis oleh mapper <code>CMP.Reader</code>. Karena sync mode <code>FORCE</code>, jika role user di Entra diganti, role Keycloak lama dicabut pada login berikutnya. Jika assignment dihapus seluruhnya, Entra langsung menolak login (<code>AADSTS50105</code>).</li></ol></figcaption></figure>
+</div></section>
+
+<section class="panel" id="first-login"><div class="section-head"><h2>First broker login: apa yang terjadi</h2><span class="badge">SEKALI PER USER</span></div><ol class="step-list">
+<li><h3>Lookup federated identity</h3><p>Keycloak mencari link <code>entra-saml</code> + <code>objectidentifier</code>. Jika ada, user langsung login dan mapper dijalankan ulang (FORCE).</p></li>
+<li><h3>Review profile</h3><p>Jika atribut wajib (email, first name, last name) belum lengkap, form <em>Update account information</em> muncul. Inilah yang terjadi di lab karena <code>surname</code> kosong.</p></li>
+<li><h3>Create user if unique</h3><p>Jika tidak ada user dengan username/email sama, user baru dibuat (JIT). Jika ada, Keycloak meminta konfirmasi link akun; ini mencegah pengambilalihan akun lokal hanya berdasarkan email.</p></li>
+<li><h3>Mapper dan sesi</h3><p>Atribut dan role diterapkan, sesi Keycloak dibuat, lalu Keycloak melanjutkan OIDC ke claims-app.</p></li>
+</ol></section>
+
+<section class="panel" id="rest"><h2>Admin REST yang dipakai script</h2>
+<pre data-label="Admin REST"><code>POST /realms/master/protocol/openid-connect/token          # admin-cli, user lab-admin (password dari secret)
+GET|PUT /admin/realms/saml-lab/users/profile               # deklarasi entra_oid, entra_tenant_id
+POST /admin/realms/saml-lab/identity-provider/import-config  # multipart: providerId=saml, file=metadata.xml
+POST|PUT /admin/realms/saml-lab/identity-provider/instances[/entra-saml]
+POST|PUT /admin/realms/saml-lab/identity-provider/instances/entra-saml/mappers[/{id}]
+POST /admin/realms/saml-lab/users                          # lab-local
+POST /admin/realms/saml-lab/users/{id}/role-mappings/realm # cmp-viewer</code></pre>
+<p class="muted">SP metadata Keycloak untuk diberikan ke IdP lain: <code>http://localhost:8180/realms/saml-lab/broker/entra-saml/endpoint/descriptor</code>.</p></section>
+
+<section class="panel sources"><h3>Sumber</h3><ul>
+<li><a href="https://www.keycloak.org/docs/latest/server_admin/index.html#_identity_broker">Keycloak: Integrating identity providers</a></li>
+<li><a href="https://www.keycloak.org/docs/latest/server_admin/index.html#saml-v2-0-identity-providers">Keycloak: SAML v2.0 identity providers</a></li>
+<li><a href="https://www.keycloak.org/docs/latest/server_admin/index.html#user-profile">Keycloak: Managing user profile</a></li>
+<li><a href="https://www.keycloak.org/docs-api/latest/rest-api/index.html">Keycloak Admin REST API</a></li>
+</ul></section>
+</main></div></body></html>

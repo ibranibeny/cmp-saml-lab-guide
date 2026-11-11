@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="id"><head><meta name="site-mode" content="saml-guide"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="L400 lab: Keycloak 26 sebagai SAML SP/broker dan Microsoft Entra ID sebagai SAML IdP, berjalan dengan Docker Compose di laptop."><title>SAML lab: Keycloak ↔ Entra ID — CMP / Azure</title><link rel="stylesheet" href="styles.css"><script type="module" src="shell.js"></script></head>
+<body><div id="shell"></div><div class="layout"><main id="main" class="page">
+<header class="hero"><div class="eyebrow">L400 / SAML 2.0 live lab di laptop</div><h1>Entra ID sebagai IdP.<br>Keycloak sebagai broker.<br>Bukti nyata, bukan mock.</h1><p class="lead">Lab ini membangun ulang pola dari video <em>Keycloak 26 + Microsoft Entra ID SAML 2.0 SSO (Part 3)</em> dengan Docker Compose di laptop, lalu mengujinya end-to-end terhadap tenant Entra sungguhan. Setiap langkah disertai screenshot asli dengan penanda bernomor.</p><div class="actions"><a class="button" href="saml-lab-docker.html">Mulai dari langkah 1 <span aria-hidden="true">&rarr;</span></a><a class="button secondary" href="saml-lab-test.html">Lihat hasil uji</a></div></header>
+
+<div class="callout good"><strong>Diuji live pada 11 November 2026.</strong> Login SAML dari Keycloak (localhost) ke Entra ID berhasil: Entra mencatat sign-in <em>Success</em> untuk aplikasi <code>CMP SAML Lab - Keycloak localhost</code>, Keycloak membuat user JIT dengan atribut <code>entra_oid</code>, dan app role Entra <code>CMP.Reader</code> menjadi realm role Keycloak <code>cmp-viewer</code> di ID token.</div>
+
+<div class="callout danger"><strong>Jangan tertukar arah trust.</strong> Pola Keycloak sebagai <em>IdP</em> bagi guest Entra (External ID SAML federation, Azure portal sebagai tujuan) berbeda dari lab ini. Di sini <strong>Entra ID adalah IdP</strong> dan <strong>Keycloak adalah Service Provider (SP)</strong> yang mem-broker login ke aplikasi OIDC. User lokal Keycloak hanya menjadi pembanding; lab ini tidak membuat user tersebut bisa masuk ke Azure. </div>
+
+<section class="panel" id="video"><div class="section-head"><h2>Memahami video</h2><span class="badge">YOUTUBE · 21:45 · PART 3</span></div>
+<p><a href="https://www.youtube.com/watch?v=Ajq98O2TB-c">Keycloak 26 + Microsoft Entra ID SAML 2.0 SSO | Configuration Walkthrough (Part 3)</a> oleh <em>Secure AI Learning Lab</em>. Ringkasan di bawah disusun dari deskripsi dan bagian video; transkrip otomatis tidak dapat diambil, jadi urutan menit tidak dicantumkan.</p>
+<div class="grid two">
+<article><h3>1 · Enterprise App non-gallery (SAML)</h3><p class="muted">Buat aplikasi “Create your own application” di Entra, pilih SAML. Isi <strong>Identifier (Entity ID)</strong> dan <strong>Reply URL (ACS)</strong> dengan nilai yang disalin dari Keycloak. Entra lalu menerbitkan sertifikat penandatangan dan <strong>App Federation Metadata URL</strong>.</p></article>
+<article><h3>2 · Attributes &amp; Claims + JIT</h3><p class="muted">Klaim default (given name, surname, email, name) dikirim di assertion. Keycloak memakai klaim ini untuk membuat user secara <em>just-in-time</em>. Poin penting: <mark class="key">jika atribut sumber di Entra kosong, klaimnya tidak dikirim sama sekali</mark>.</p></article>
+<article><h3>3 · User uji, app role, assignment</h3><p class="muted">Video memakai user uji dan meng-assign-nya ke aplikasi. App role yang di-assign ikut terkirim sebagai klaim <code>role</code>, sehingga bisa dipetakan ke role Keycloak.</p></article>
+<article><h3>4 · Keycloak 26: SAML v2.0 Identity Provider</h3><p class="muted">Tambahkan IdP SAML v2.0, salin <strong>Redirect URI</strong> dan <strong>Service provider entity ID</strong> ke Entra, impor metadata Entra, lalu tambahkan <strong>IdP mappers</strong>. Aplikasi (Spring Boot di video) tetap memakai OIDC ke Keycloak.</p></article>
+</div>
+<h3>Apa yang kami ubah untuk lab ini</h3>
+<div class="table-wrap"><table><thead><tr><th>Video</th><th>Lab ini</th><th>Alasan</th></tr></thead><tbody>
+<tr><td>Aplikasi Spring Boot</td><td><code>claims-app</code> Node.js tanpa dependency</td><td>Image kecil, kode milik sendiri (repo video tidak berlisensi, jadi tidak disalin), menampilkan klaim penting secara jelas.</td></tr>
+<tr><td>Konfigurasi manual di portal</td><td>Script Microsoft Graph + Keycloak Admin REST yang idempotent</td><td>Bisa diulang, diaudit, dan di-reset. Hasilnya tetap diverifikasi di portal (screenshot).</td></tr>
+<tr><td>Import metadata lewat URL</td><td>Metadata diunduh di host lalu di-upload</td><td>Container tidak punya egress ke <code>login.microsoftonline.com</code> di jaringan Global Secure Access (detail di <a href="saml-lab-keycloak.html#metadata">langkah 3</a>).</td></tr>
+<tr><td>User uji baru</td><td>User admin yang sudah terdaftar MFA</td><td>Conditional Access tenant memblokir registrasi MFA user baru dari lokasi biasa.</td></tr>
+<tr><td>Satu role</td><td>App role <code>CMP.Reader</code> / <code>CMP.Admin</code> → realm role <code>cmp-viewer</code> / <code>cmp-admin</code></td><td>Menyelaraskan dengan model akses read-only CMP.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="architecture"><h2>Arsitektur lab</h2>
+<div class="flow" aria-label="Alur: browser, claims-app, Keycloak, Entra ID"><div class="flow-node"><strong>Browser</strong><small>Laptop Anda</small></div><div class="flow-arrow" aria-hidden="true">&rarr;</div><div class="flow-node"><strong>claims-app :3180</strong><small>OIDC client · code + PKCE S256</small></div><div class="flow-arrow" aria-hidden="true">&rarr;</div><div class="flow-node teal"><strong>Keycloak 26.8.2 :8180</strong><small>Realm <code>saml-lab</code> · SAML SP / broker <code>entra-saml</code></small></div><div class="flow-arrow" aria-hidden="true">&rarr;</div><div class="flow-node"><strong>Microsoft Entra ID</strong><small>SAML IdP · Enterprise App non-gallery</small></div></div>
+<p class="muted">Ketiga container (PostgreSQL, Keycloak, claims-app) berjalan di Docker di dalam WSL 2. Port hanya di-bind ke <code>127.0.0.1</code>. Pesan SAML dibawa oleh <strong>browser</strong> (front-channel), jadi Entra tidak perlu menjangkau laptop dan Keycloak tidak perlu menjangkau Entra saat login.</p></section>
+
+<section class="panel" id="sequence"><h2>Urutan pesan (SP-initiated, terverifikasi dari capture)</h2>
+<div class="table-wrap"><table class="seq"><thead><tr><th>#</th><th>Dari → ke</th><th>Pesan</th><th>Yang divalidasi</th></tr></thead><tbody>
+<tr><td>1</td><td>Browser → claims-app</td><td>Klik <em>Masuk dengan Microsoft Entra ID (SAML)</em></td><td>claims-app membuat <code>state</code>, <code>nonce</code>, PKCE verifier di cookie HttpOnly.</td></tr>
+<tr><td>2</td><td>claims-app → Keycloak</td><td>OIDC authorization request + <code>kc_idp_hint=entra-saml</code></td><td>Keycloak melewati halaman login dan langsung memilih broker SAML.</td></tr>
+<tr><td>3</td><td>Keycloak → Entra</td><td><code>AuthnRequest</code> via HTTP-Redirect ke <code>https://login.microsoftonline.com/&lt;tenant&gt;/saml2</code></td><td>Entra mencocokkan <code>Issuer</code> dengan Identifier dan ACS dengan Reply URL.</td></tr>
+<tr><td>4</td><td>Entra ↔ user</td><td>Sign-in + MFA</td><td>Conditional Access, user harus di-assign ke aplikasi (<code>appRoleAssignmentRequired</code>).</td></tr>
+<tr><td>5</td><td>Entra → Keycloak</td><td><code>SAMLResponse</code> via HTTP-POST ke <code>/broker/entra-saml/endpoint</code></td><td>Assertion ditandatangani RSA-SHA256.</td></tr>
+<tr><td>6</td><td>Keycloak</td><td>Validasi assertion</td><td>Tanda tangan (sertifikat statis), Destination, Audience, <code>InResponseTo</code>, NotBefore/NotOnOrAfter ± 30 detik.</td></tr>
+<tr><td>7</td><td>Keycloak</td><td>First broker login (sekali)</td><td>Cari user via <code>objectidentifier</code>; jika belum ada: review profile → buat user JIT → link IdP → jalankan mapper.</td></tr>
+<tr><td>8</td><td>Keycloak → claims-app</td><td>Redirect <code>/callback?code&amp;state</code></td><td><code>state</code> harus sama dengan cookie.</td></tr>
+<tr><td>9</td><td>claims-app → Keycloak</td><td>Token request back-channel (<code>http://keycloak:8080</code>)</td><td>Client secret + <code>code_verifier</code>.</td></tr>
+<tr><td>10</td><td>claims-app</td><td>Verifikasi ID token</td><td>RS256 via JWKS, <code>iss</code>, <code>aud</code>, <code>exp</code>, <code>nonce</code>; tampilkan klaim.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="trust"><h2>Tiga trust relationship</h2><div class="grid three">
+<div><h3>Entra mempercayai SP</h3><p class="muted">Entra hanya mengirim assertion ke <strong>Reply URL terdaftar</strong> untuk <strong>Identifier</strong> yang cocok, dan hanya untuk user yang di-assign. AuthnRequest lab tidak ditandatangani; produksi sebaiknya menandatanganinya.</p></div>
+<div><h3>Keycloak mempercayai Entra</h3><p class="muted">Keycloak menerima assertion hanya jika tanda tangannya valid terhadap <strong>sertifikat signing Entra</strong> yang diimpor. Ini satu-satunya kunci kepercayaan; jaga rotasinya.</p></div>
+<div><h3>Aplikasi mempercayai Keycloak</h3><p class="muted">claims-app tidak pernah melihat SAML. Ia hanya mempercayai ID token OIDC dari issuer <code>http://localhost:8180/realms/saml-lab</code> yang diverifikasi lewat JWKS.</p></div>
+</div></section>
+
+<section class="panel" id="findings"><div class="section-head"><h2>Temuan L400 dari uji live</h2><span class="badge warn">PENTING</span></div><ol class="step-list">
+<li><h3>Klaim role terkirim tanpa claims-mapping policy</h3><p>Untuk user yang di-assign ke app role, Entra otomatis mengirim <code>http://schemas.microsoft.com/ws/2008/06/identity/claims/role = CMP.Reader</code>. Cukup satu mapper Keycloak <em>SAML Attribute to Role</em>.</p></li>
+<li><h3>Atribut kosong = klaim hilang</h3><p>User uji tidak punya <code>mail</code> dan <code>surname</code>, sehingga klaim <code>emailaddress</code> dan <code>surname</code> tidak dikirim. Akibatnya Keycloak meminta <em>Last name</em> di first broker login, dan email diambil dari klaim <code>name</code> (UPN).</p></li>
+<li><h3>Identitas stabil = object ID, bukan email</h3><p>Principal broker memakai klaim <code>objectidentifier</code> (immutable). UPN/email bisa berubah; object ID tidak. Username JIT di Keycloak menjadi GUID tersebut.</p></li>
+<li><h3>Entra menandatangani Assertion, bukan Response</h3><p>Capture menunjukkan Response tidak bertanda tangan sedangkan Assertion bertanda tangan (RSA-SHA256, exclusive C14N). Karena itu <em>Want Assertions signed</em> harus <strong>On</strong> di Keycloak.</p></li>
+<li><h3>Jendela waktu 65 menit</h3><p>Entra memundurkan <code>NotBefore</code> sekitar 5 menit dan memberi <code>NotOnOrAfter</code> sekitar 1 jam. Error <em>expired</em> hampir selalu berarti jam host/WSL bergeser.</p></li>
+<li><h3>MFA terlihat di klaim, bukan di AuthnContext</h3><p><code>AuthnContextClassRef</code> tetap <em>Password</em>, sedangkan klaim <code>authnmethodsreferences</code> berisi <code>multipleauthn</code>. Jika aplikasi perlu bukti MFA, petakan klaim ini; jangan mengandalkan AuthnContext.</p></li>
+<li><h3>Egress container bisa diblokir</h3><p>Di laptop dengan Global Secure Access, DNS container mengembalikan alamat sintetis <code>6.6.x.x</code> sehingga import metadata dari URL gagal. Solusi: upload file metadata dan pakai sertifikat statis, dengan konsekuensi rotasi sertifikat manual.</p></li>
+</ol></section>
+
+<div class="section-head"><h2>Ikuti langkahnya</h2><span class="muted small">Sekitar 30 menit dari nol</span></div>
+<div class="grid two">
+<a class="card card-link" href="saml-lab-docker.html"><div class="tag">LANGKAH 1 / DOCKER COMPOSE</div><h3>Jalankan stack di laptop</h3><p>Prasyarat WSL 2, secret lokal, PostgreSQL + Keycloak + claims-app, health check, dan operasi harian.</p><footer>Deploy lab &rarr;</footer></a>
+<a class="card card-link" href="saml-lab-entra.html"><div class="tag">LANGKAH 2 / ENTRA ID = IdP</div><h3>Enterprise App SAML</h3><p>Identifier, Reply URL, app role, sertifikat, assignment, dan sign-in log sebagai bukti.</p><footer>Konfigurasi Entra &rarr;</footer></a>
+<a class="card card-link" href="saml-lab-keycloak.html"><div class="tag">LANGKAH 3 / KEYCLOAK = SP</div><h3>Broker SAML dan mapper</h3><p>IdP <code>entra-saml</code>, signature, mapper role/atribut, user JIT, dan user lokal.</p><footer>Konfigurasi Keycloak &rarr;</footer></a>
+<a class="card card-link" href="saml-lab-test.html"><div class="tag">LANGKAH 4 / UJI</div><h3>Uji, baca SAML, perbaiki error</h3><p>Dua jalur login, anatomi AuthnRequest dan Assertion, troubleshooting, hardening, cleanup.</p><footer>Uji end-to-end &rarr;</footer></a>
+</div>
+
+<section class="panel sources"><h3>Sumber</h3><ul>
+<li><a href="https://www.youtube.com/watch?v=Ajq98O2TB-c">Video: Keycloak 26 + Microsoft Entra ID SAML 2.0 SSO (Part 3)</a></li>
+<li><a href="https://learn.microsoft.com/en-us/graph/application-saml-sso-configure-api">Microsoft Graph: configure SAML-based single sign-on for an application</a></li>
+<li><a href="https://learn.microsoft.com/en-us/entra/identity-platform/single-sign-on-saml-protocol">Microsoft Entra: single sign-on SAML protocol</a></li>
+<li><a href="https://learn.microsoft.com/en-us/entra/identity-platform/reference-saml-tokens">Microsoft Entra: SAML token claims reference</a></li>
+<li><a href="https://www.keycloak.org/docs/latest/server_admin/index.html#_identity_broker">Keycloak Server Administration: identity brokering</a></li>
+</ul><p class="small muted">Kode lab: <code>labs/saml-entra-keycloak/</code> di repo ini. Seluruh screenshot diambil dari lab yang berjalan; GUID, email, dan IP disamarkan.</p></section>
+</main></div></body></html>

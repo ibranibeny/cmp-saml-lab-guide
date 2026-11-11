@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="id"><head><meta name="site-mode" content="saml-guide"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Langkah 1: menjalankan PostgreSQL, Keycloak 26 dan claims-app dengan Docker Compose di laptop (Docker Desktop atau WSL 2)."><title>Langkah 1 · Docker Compose — SAML lab</title><link rel="stylesheet" href="styles.css"><script type="module" src="shell.js"></script></head>
+<body><div id="shell"></div><div class="layout"><main id="main" class="page">
+<header class="hero"><div class="eyebrow">Langkah 1 dari 4 / Docker Compose di laptop</div><h1>Tiga container.<br>Nol port ke LAN.</h1><p class="lead">PostgreSQL, Keycloak 26.8.2 dan <code>claims-app</code> berjalan di Docker (Desktop atau Engine di WSL 2). Semua secret dibuat acak di laptop, dipasang sebagai Docker secret, dan tidak pernah dicetak ke layar atau masuk ke git.</p></header>
+
+<section class="panel" id="prereq"><h2>Prasyarat</h2>
+<div class="table-wrap"><table><thead><tr><th>Komponen</th><th>Versi / syarat</th><th>Cek cepat</th></tr></thead><tbody>
+<tr><td>Docker</td><td>Docker Desktop, <strong>atau</strong> Docker Engine di WSL 2 distro <code>Ubuntu</code>, dengan Compose v2</td><td><code>docker compose version</code> atau <code>wsl -d Ubuntu -e docker compose version</code></td></tr>
+<tr><td>PowerShell</td><td>7.2 atau lebih baru</td><td><code>$PSVersionTable.PSVersion</code></td></tr>
+<tr><td>Azure CLI</td><td>Login ke tenant target dengan hak membuat Enterprise App (mis. <em>Cloud Application Administrator</em>)</td><td><code>az account show</code></td></tr>
+<tr><td>Port lokal</td><td><code>127.0.0.1:8180</code> (Keycloak) dan <code>127.0.0.1:3180</code> (claims-app) bebas</td><td><code>Get-NetTCPConnection -LocalPort 8180,3180 -State Listen</code></td></tr>
+<tr><td>Jam sistem</td><td>Sinkron (NTP). Assertion SAML punya masa berlaku ketat</td><td><code>w32tm /query /status</code></td></tr>
+</tbody></table></div>
+<div class="callout info"><strong>Tanpa Docker Desktop?</strong> Tidak masalah. Lab ini diuji pada Docker Engine di WSL 2. <code>Invoke-SamlLab.ps1</code> mencoba <code>docker info</code> di Windows; jika gagal, ia otomatis menjalankan <code>scripts/lab.sh</code> di dalam WSL. Paksa dengan <code>-Engine wsl</code> atau <code>-Engine desktop</code>.</div></section>
+
+<section class="panel" id="components"><h2>Komponen di <code>labs/saml-entra-keycloak/compose.yaml</code></h2>
+<div class="table-wrap"><table><thead><tr><th>Service</th><th>Image</th><th>Port host</th><th>Peran</th></tr></thead><tbody>
+<tr><td><code>postgres</code></td><td><code>postgres:17-alpine</code></td><td>tidak ada (internal)</td><td>Database Keycloak, volume <code>pgdata</code>, health check <code>pg_isready</code>.</td></tr>
+<tr><td><code>keycloak</code></td><td><code>quay.io/keycloak/keycloak:26.8.2</code></td><td><code>127.0.0.1:8180</code></td><td><code>kc.sh start --import-realm</code>; mengimpor realm <code>saml-lab</code> dari <code>keycloak/realm-saml-lab.json</code>. Health di port manajemen 9000.</td></tr>
+<tr><td><code>claims-app</code></td><td>build lokal dari <code>claims-app/</code> (Node, tanpa dependency)</td><td><code>127.0.0.1:3180</code></td><td>Client OIDC yang memverifikasi ID token dan menampilkan klaim penting.</td></tr>
+</tbody></table></div>
+<h3>Hardening yang sudah ada di compose</h3>
+<ul class="step-list">
+<li><h3>Bind hanya ke loopback</h3><p>Semua port memakai <code>127.0.0.1:</code>. Laptop di jaringan kantor atau kafe tidak membuka Keycloak ke LAN.</p></li>
+<li><h3>Docker secrets, bukan environment</h3><p>Password DB, admin bootstrap dan client secret dibaca dari <code>/run/secrets/*</code> saat start, sehingga tidak terlihat di <code>docker inspect</code>.</p></li>
+<li><h3>claims-app tanpa privilege</h3><p><code>read_only: true</code>, <code>cap_drop: [ALL]</code>, <code>no-new-privileges:true</code>.</p></li>
+<li><h3>Start bertahap dengan health check</h3><p>Keycloak menunggu PostgreSQL <em>healthy</em>; claims-app menunggu Keycloak <em>healthy</em> (<code>/health/ready</code>, <code>start_period</code> 90 detik).</p></li>
+</ul></section>
+
+<section class="panel" id="hostname"><div class="section-head"><h2>Mengapa <code>KC_HOSTNAME</code> paling penting</h2><span class="badge warn">PENTING</span></div>
+<p><code>KC_HOSTNAME=http://localhost:8180</code> menentukan tiga nilai sekaligus: URL yang dilihat browser, <mark class="key">SAML SP entity ID <code>http://localhost:8180/realms/saml-lab</code></mark>, dan OIDC issuer. Entity ID dan Reply URL di Entra harus <strong>persis sama</strong> dengan nilai yang diturunkan dari hostname ini.</p>
+<div class="grid two"><div class="callout danger"><strong>Jika diubah setelah configure</strong>, Entra akan menolak dengan <code>AADSTS700016</code> (Identifier) atau <code>AADSTS50011</code> (Reply URL), dan claims-app menolak ID token karena <code>iss</code> berbeda. Jalankan ulang <code>configure</code> setelah mengganti hostname.</div><div class="callout info"><strong><code>KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true</code></strong> mengizinkan claims-app menukar code di <code>http://keycloak:8080</code> (jaringan container) sementara issuer tetap <code>http://localhost:8180</code>.</div></div></section>
+
+<section class="panel" id="run"><h2>Jalankan</h2><ol class="step-list">
+<li><h3>Ambil kode lab, lalu masuk ke folder script</h3><p>Kode Docker Compose dan script berada di <a href="https://github.com/benyibrani_microsoft/cmp-azure-identity-lab/tree/main/labs/saml-entra-keycloak">repositori sumber privat</a>. Akses repo diperlukan; situs panduan publik tidak menyertakan secret, backend, atau kode lab. Jika repo sudah ada di laptop, langsung masuk ke folder script.</p><pre data-label="PowerShell"><code>gh repo clone benyibrani_microsoft/cmp-azure-identity-lab
+cd cmp-azure-identity-lab\labs\saml-entra-keycloak\scripts</code></pre></li>
+<li><h3>Buat secret, build, start, tunggu sehat</h3><pre data-label="PowerShell"><code>./Invoke-SamlLab.ps1 -Action up</code></pre><p class="muted">Pertama kali butuh beberapa menit karena image Keycloak dan PostgreSQL ditarik dan claims-app di-build. Script berhenti setelah <code>keycloak healthy</code> lalu menampilkan <code>docker compose ps</code>. Di Linux/macOS/WSL setara dengan <code>./lab.sh up</code>.</p></li>
+<li><h3>Login Azure CLI ke tenant target</h3><pre data-label="PowerShell"><code>az login --tenant &lt;tenant-id&gt;</code></pre></li>
+<li><h3>Konfigurasi Entra dan Keycloak</h3><pre data-label="PowerShell"><code>./Invoke-SamlLab.ps1 -Action configure</code></pre><p class="muted">Menjalankan <a href="saml-lab-entra.html">langkah 2</a> (<code>New-EntraSamlApp.ps1</code>) lalu <a href="saml-lab-keycloak.html">langkah 3</a> (<code>Set-KeycloakEntraBroker.ps1</code>). Idempotent: aman diulang.</p></li>
+<li><h3>Buka aplikasi</h3><pre data-label="PowerShell"><code>start http://localhost:3180</code></pre></li>
+</ol>
+<figure class="shot"><a href="img/saml-lab/01-claims-app-home.png"><img src="img/saml-lab/01-claims-app-home.png" width="1440" height="900" loading="lazy" alt="Halaman awal claims-app dengan dua tombol login: Microsoft Entra ID (SAML) dan akun lokal Keycloak"></a><figcaption><strong>Gambar 1 · claims-app siap di http://localhost:3180.</strong> Dua jalur: tombol Entra mengirim <code>kc_idp_hint=entra-saml</code> sehingga langsung ke broker SAML; tombol lokal memakai <code>prompt=login</code> ke form Keycloak.</figcaption></figure></section>
+
+<section class="panel" id="secrets"><h2>Secret lokal</h2>
+<p>Dibuat sekali oleh <code>up</code> (atau <code>lab.sh init</code>) di <code>labs/saml-entra-keycloak/.local/secrets/</code>: 32 byte acak, base64url. Folder <code>.local/</code> di-ignore oleh git dan tidak ikut ke image portal.</p>
+<div class="table-wrap"><table><thead><tr><th>File</th><th>Dipakai oleh</th></tr></thead><tbody>
+<tr><td><code>kc_db_password</code></td><td>PostgreSQL dan Keycloak</td></tr>
+<tr><td><code>kc_admin_password</code></td><td>Admin bootstrap Keycloak <code>lab-admin</code></td></tr>
+<tr><td><code>claims_app_client_secret</code></td><td>Client OIDC confidential <code>claims-app</code> (realm import + aplikasi)</td></tr>
+<tr><td><code>claims_app_cookie_secret</code></td><td>HMAC cookie sesi claims-app</td></tr>
+<tr><td><code>local_user_password</code></td><td>User lokal Keycloak <code>lab-local</code> (dibuat oleh <code>configure</code>)</td></tr>
+</tbody></table></div>
+<p>Salin password ke clipboard tanpa menampilkannya:</p>
+<pre data-label="PowerShell"><code>Get-Content ..\.local\secrets\kc_admin_password -Raw | Set-Clipboard     # admin console, user lab-admin
+Get-Content ..\.local\secrets\local_user_password -Raw | Set-Clipboard   # user lokal lab-local</code></pre>
+<p class="muted">Admin console: <code>http://localhost:8180/admin/</code> → realm <code>saml-lab</code>.</p></section>
+
+<section class="panel" id="ops"><h2>Operasi harian</h2>
+<div class="table-wrap"><table><thead><tr><th>Perintah</th><th>Efek</th></tr></thead><tbody>
+<tr><td><code>./Invoke-SamlLab.ps1 -Action status</code></td><td>Status container dan health.</td></tr>
+<tr><td><code>./Invoke-SamlLab.ps1 -Action logs -Service keycloak</code></td><td>200 baris log terakhir (<code>keycloak</code>, <code>claims-app</code>, <code>postgres</code>). Sumber utama diagnosis error broker.</td></tr>
+<tr><td><code>./Invoke-SamlLab.ps1 -Action down</code></td><td>Stop container, data Keycloak tetap ada.</td></tr>
+<tr><td><code>./Invoke-SamlLab.ps1 -Action reset</code></td><td>Stop dan hapus volume database. Realm diimpor ulang saat <code>up</code>; jalankan <code>configure</code> lagi.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel" id="troubleshoot"><h2>Masalah umum saat start</h2>
+<div class="table-wrap"><table><thead><tr><th>Gejala</th><th>Penyebab</th><th>Perbaikan</th></tr></thead><tbody>
+<tr><td><code>Keycloak did not become healthy in time</code></td><td>DB belum siap, image masih ditarik, atau RAM WSL kurang</td><td>Lihat <code>-Action logs -Service keycloak</code>; beri WSL minimal 4 GB di <code>.wslconfig</code>.</td></tr>
+<tr><td><code>port is already allocated</code></td><td>Port 8180/3180 dipakai proses lain</td><td>Hentikan proses tersebut. Jika port diganti, ubah juga <code>KC_HOSTNAME</code> dan jalankan ulang <code>configure</code>.</td></tr>
+<tr><td><code>localhost:8180</code> tidak terbuka dari Windows padahal container sehat</td><td>Forwarding localhost WSL nonaktif</td><td>Pastikan <code>localhostForwarding</code> tidak dimatikan di <code>.wslconfig</code>, lalu <code>wsl --shutdown</code>.</td></tr>
+<tr><td>Password admin tidak diterima setelah <code>reset</code></td><td>Admin bootstrap hanya dibuat saat database kosong</td><td>Gunakan password di <code>kc_admin_password</code>; jangan hapus file secret tanpa <code>reset</code>.</td></tr>
+</tbody></table></div></section>
+</main></div></body></html>
