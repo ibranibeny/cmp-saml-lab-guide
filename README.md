@@ -2,6 +2,8 @@
 
 Indonesian L400 guide: Microsoft Entra ID is the SAML identity provider, Keycloak is the service provider/broker, and an OIDC claims viewer runs on the laptop with Docker Compose.
 
+**GitHub Pages:** https://ibranibeny.github.io/cmp-saml-lab-guide/
+
 The guide preserves the five sub-pages and visual style of the existing CMP portal. It includes a video explanation, deployment instructions, Entra and Keycloak configuration, troubleshooting, and 17 real screenshots with numbered highlights and redacted identifiers.
 
 ## Pages
